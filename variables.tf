@@ -13,3 +13,9 @@ variable "vpc_count" {
   type        = number
   default     = 1
 }
+
+variable "image_name" {
+  description = "Name of the custom image"
+  type        = string
+}
+
