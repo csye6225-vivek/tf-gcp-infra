@@ -13,6 +13,41 @@ provider "google-beta" {
   version = "~> 3.0"
 } */
 
+resource "google_service_account" "service_account" {
+  account_id   = "service6225"
+  display_name = "Service6225"
+}
+
+output "service_account_email" {
+  value = google_service_account.service_account.email
+}
+
+resource "google_project_iam_binding" "logging_admin" {
+  project = var.project_id
+  role    = "roles/logging.admin"
+
+  members = [
+    "serviceAccount:${google_service_account.service_account.email}",
+  ]
+}
+
+resource "google_project_iam_binding" "monitoring_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+
+  members = [
+    "serviceAccount:${google_service_account.service_account.email}",
+  ]
+}
+
+resource "google_project_iam_member" "cloud_sql_admin" {
+  project = var.project_id
+  role    = "roles/cloudsql.admin"
+  member  = "serviceAccount:${google_service_account.service_account.email}"
+}
+
+
+
 resource "google_compute_network" "vpc_network" {
   name                            = "vpc-${var.environment}"
   auto_create_subnetworks         = false
@@ -58,9 +93,9 @@ resource "google_compute_firewall" "deny_ssh" {
   name      = "deny-ssh-${var.environment}"
   network   = google_compute_network.vpc_network.self_link
   direction = "INGRESS"
-  priority  = 1000
+  priority  = 900
 
-  deny {
+  allow {
     protocol = "tcp"
     ports    = ["22"]
   }
@@ -208,8 +243,26 @@ resource "google_compute_instance" "webapp_instance" {
     }
   }
   service_account {
-    scopes = ["cloud-platform"]
+    email  = google_service_account.service_account.email
+    scopes = [
+      "https://www.googleapis.com/auth/sqlservice.admin",
+      "https://www.googleapis.com/auth/cloud-platform",
+      // ... any other required scopes ...
+    ]
   }
   tags = ["webapp-server"] # Matches the firewall rule target
   #metadata_startup_script = file("${path.module}/startup-script.sh")
 }
+
+output "instance_public_ip" {
+  value = google_compute_instance.webapp_instance.network_interface[0].access_config[0].nat_ip
+}
+
+resource "google_dns_record_set" "a_record" {
+  name         = "saivivekanand.me."
+  type         = "A"
+  ttl          = 300
+  managed_zone = "vivek-dns-zone"
+  rrdatas      = [google_compute_instance.webapp_instance.network_interface[0].access_config[0].nat_ip]
+}
+
