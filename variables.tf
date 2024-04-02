@@ -6,6 +6,54 @@ variable "project_id" {
   description = "The project ID to host resources in"
 }
 
+variable "mailgun_api_key" {
+  description = "The project ID to host resources in"
+  type = string
+  default = "e8c7879c2e58663c7838fe4a37e39d08-f68a26c9-98005b1a"
+}
+
+variable "mailgun_domain" {
+  description = "The project ID to host resources in"
+  type = string
+  default = "mail.saivivekanand.me"
+}
+
+variable "mailgun_sender_email" {
+  description = "The project ID to host resources in"
+  type = string
+  default = "postmaster@mail.saivivekanand.me"
+}
+
+variable "cloud_zip_source" {
+  description = "The project ID to host resources in"
+  type = string
+  default = "/Users/sai_vivek_vangala/Downloads/function-source.zip"
+}
+
+variable "cloud_zip_name" {
+  description = "The project ID to host resources in"
+  type = string
+  default = "function-source.zip"
+}
+
+variable "db_hostname" {
+  description = "The project ID to host resources in"
+  type = string
+  default = "10.0.1.0"
+}
+
+variable "db_username" {
+  description = "The project ID to host resources in"
+  type = string
+  default = "webapp"
+}
+
+variable "db_password" {
+  description = "The project ID to host resources in"
+  type = string
+  default = "Mnblkjpoi@123"
+}
+
 variable "region" {
   description = "The region where resources will be created"
 }
