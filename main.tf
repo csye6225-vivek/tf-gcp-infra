@@ -46,7 +46,11 @@ resource "google_project_iam_member" "cloud_sql_admin" {
   member  = "serviceAccount:${google_service_account.service_account.email}"
 }
 
-
+resource "google_project_iam_member" "pubsub_publisher" {
+  project = var.project_id
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:${google_service_account.service_account.email}"
+}
 
 resource "google_compute_network" "vpc_network" {
   name                            = "vpc-${var.environment}"
@@ -54,6 +58,14 @@ resource "google_compute_network" "vpc_network" {
   delete_default_routes_on_create = true
   routing_mode                    = "REGIONAL"
 }
+
+resource "google_service_networking_connection" "private_vpc_connection" {
+  provider                = google-beta
+  network                 = google_compute_network.vpc_network.self_link
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.private_ip_address.name]
+}
+
 
 resource "google_compute_subnetwork" "webapp" {
   name          = "webapp-${var.environment}"
@@ -115,13 +127,6 @@ resource "google_compute_global_address" "private_ip_address" {
   address_type  = "INTERNAL"
   prefix_length = 16
   network       = google_compute_network.vpc_network.self_link
-}
-
-resource "google_service_networking_connection" "private_vpc_connection" {
-  provider                = google-beta
-  network                 = google_compute_network.vpc_network.self_link
-  service                 = "servicenetworking.googleapis.com"
-  reserved_peering_ranges = [google_compute_global_address.private_ip_address.name]
 }
 
 resource "google_sql_database_instance" "mysql_instance" {
@@ -266,3 +271,146 @@ resource "google_dns_record_set" "a_record" {
   rrdatas      = [google_compute_instance.webapp_instance.network_interface[0].access_config[0].nat_ip]
 }
 
+# ... [existing resources] ...
+# Cloud Storage bucket to store Cloud Function code
+ resource "google_storage_bucket" "cloud_function_bucket" {
+  name          = "verify-email-buckets"
+  location      = var.region
+  force_destroy = true
+}
+
+resource "google_storage_bucket_object" "cloud_zip" {
+  name   = var.cloud_zip_name
+  bucket = google_storage_bucket.cloud_function_bucket.name
+  source = var.cloud_zip_source #/Users/sai_vivek_vangala/Downloads
+}
+
+# Google Cloud Pub/Sub topic to trigger the Cloud Function
+resource "google_pubsub_topic" "pubsub_topic" {
+  name = "verify_email"
+}
+
+resource "google_pubsub_subscription" "pubsub_subscription" {
+  name  = "verify-email-subscription"
+  topic = google_pubsub_topic.pubsub_topic.name
+
+  ack_deadline_seconds = 20
+}
+
+
+# Serverless VPC Access connector configuration
+resource "google_vpc_access_connector" "vpc_connector" {
+  name          = "serverless-connector"
+  region        = var.region
+  network       = google_compute_network.vpc_network.id
+  ip_cidr_range = "10.0.3.0/28"
+}
+
+
+# Google Cloud Function
+/*resource "google_cloudfunctions_function" "cloud_function" {
+  name                  = "function-1"
+  description           = "A Cloud Function triggered by Pub/Sub to verify email"
+  runtime               = "python39"
+  available_memory_mb   = 256
+  source_archive_bucket = "verify-email-buckets"
+  source_archive_object = "function-source.zip"
+  entry_point           = "hello_pubsub"
+
+  event_trigger {
+    event_type = "google.pubsub.topic.publish"
+    resource   = google_pubsub_topic.pubsub_topic.id
+  }
+
+  vpc_connector = google_vpc_access_connector.vpc_connector.id
+
+  # Optional: Set environment variables for the Cloud Function
+  environment_variables = {
+    MAILGUN_API_KEY = var.mailgun_api_key
+    MAILGUN_DOMAIN  = var.mailgun_domain
+    MAILGUN_SENDER_EMAIL = var.mailgun_sender_email
+    INSTANCE_CONNECTION_NAME = "${var.project_id}:${var.region}:${google_sql_database_instance.mysql_instance.name}"
+    DB_HOST_NAME=google_sql_database_instance.mysql_instance.private_ip_address
+    DB_USERNAME="webapp"
+    DB_PASSWORD=random_password.password.result
+    # Any other environment variables can be added here
+  }
+}*/
+
+/*resource "google_cloudfunctions_function" "cloud_function" {
+  name                  = "function-1"
+  description           = "A Cloud Function triggered by Pub/Sub to verify email"
+  runtime               = "python39"
+  available_memory_mb   = 256
+  source_archive_bucket = google_storage_bucket.cloud_function_bucket.name
+  source_archive_object = google_storage_bucket_object.cloud_zip.name
+  entry_point           = "hello_pubsub"
+
+  event_trigger {
+    event_type = "google.pubsub.topic.publish"
+    resource   = google_pubsub_topic.pubsub_topic.id
+  }
+
+  vpc_connector = google_vpc_access_connector.vpc_connector.id
+
+  environment_variables = {
+    MAILGUN_API_KEY               = var.mailgun_api_key
+    MAILGUN_DOMAIN                = var.mailgun_domain
+    MAILGUN_SENDER_EMAIL          = var.mailgun_sender_email
+    INSTANCE_CONNECTION_NAME      = "${var.project_id}:${var.region}:${google_sql_database_instance.mysql_instance.name}"
+    DB_HOST_NAME                  = google_sql_database_instance.mysql_instance.private_ip_address
+    DB_USERNAME                   = "webapp"
+    DB_PASSWORD                   = random_password.password.result
+    GOOGLE_CLOUDFUNCTIONS_GENERATION = "2"
+  }
+}*/
+
+resource "google_cloudfunctions2_function" "cloud_function" {
+  name                  = "function-1"
+  description           = "A Cloud Function triggered by Pub/Sub to verify email"
+  location              = var.region
+  build_config {
+    runtime     = "python310"
+    entry_point = "hello_pubsub"
+    source {
+      storage_source {
+        bucket = google_storage_bucket.cloud_function_bucket.name
+        object = google_storage_bucket_object.cloud_zip.name
+      }
+    }
+  }
+  service_config {
+    max_instance_count    = 1
+    available_memory      = "256M"
+    timeout_seconds       = 60
+    environment_variables = {
+      MAILGUN_API_KEY          = var.mailgun_api_key
+      MAILGUN_DOMAIN           = var.mailgun_domain
+      MAILGUN_SENDER_EMAIL     = var.mailgun_sender_email
+      INSTANCE_CONNECTION_NAME = "${var.project_id}:${var.region}:${google_sql_database_instance.mysql_instance.name}"
+      DB_HOST_NAME             = google_sql_database_instance.mysql_instance.private_ip_address
+      DB_USERNAME              = "webapp"
+      DB_PASSWORD              = random_password.password.result
+    }
+    vpc_connector = google_vpc_access_connector.vpc_connector.id
+  }
+  event_trigger {
+    trigger_region = var.region
+    event_type     = "google.cloud.pubsub.topic.v1.messagePublished"
+    pubsub_topic   = google_pubsub_topic.pubsub_topic.id
+  }
+}
+
+# ... (Other resources like Compute instances, DNS record sets, etc.) ...
+
+# Outputs to display after Terraform apply
+
+output "pubsub_topic_name" {
+  value = google_pubsub_topic.pubsub_topic.name
+}
+
+output "cloud_function_name" {
+  value = google_cloudfunctions2_function.cloud_function.name
+}
+
+# ... (Any additional outputs) ...
