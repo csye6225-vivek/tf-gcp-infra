@@ -14,7 +14,7 @@ provider "google-beta" {
 } */
 
 resource "google_service_account" "service_account" {
-  account_id   = "service6225"
+  account_id   = var.service_account
   display_name = "Service6225"
 }
 
@@ -88,32 +88,34 @@ resource "google_compute_route" "internet_gateway" {
   next_hop_gateway = "default-internet-gateway"
 }
 
-resource "google_compute_firewall" "allow_application_traffic" {
-  name    = "allow-app-traffic-${var.environment}"
+resource "google_compute_firewall" "allow_lb_traffic" {
+  name    = "allow-lb-traffic-${var.environment}"
   network = google_compute_network.vpc_network.self_link
+  priority = 900
 
   allow {
     protocol = "tcp"
-    ports    = ["8080"] # Replace with your application's port
+    ports    = ["8080"]
   }
 
-  source_ranges = ["0.0.0.0/0"]     # Allow from any IP
-  target_tags   = ["webapp-server"] # Ensure your instance has this tag
+  source_ranges = ["130.211.0.0/22", "35.191.0.0/16"]
+  target_tags   = ["webapp-server"]
 }
 
-resource "google_compute_firewall" "deny_ssh" {
-  name      = "deny-ssh-${var.environment}"
-  network   = google_compute_network.vpc_network.self_link
-  direction = "INGRESS"
-  priority  = 900
+resource "google_compute_firewall" "deny_external_traffic" {
+  name    = "deny-external-traffic-${var.environment}"
+  network = google_compute_network.vpc_network.self_link
 
   allow {
     protocol = "tcp"
     ports    = ["22"]
   }
 
-  source_ranges = ["0.0.0.0/0"] # Deny from any IP
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["webapp-server"]
 }
+
+
 
 resource "google_project_service" "service_networking" {
   service            = "servicenetworking.googleapis.com"
@@ -175,51 +177,33 @@ resource "google_sql_user" "webapp_user" {
   password = random_password.password.result
 }
 
-# Assuming you have already defined a CloudSQL instance named `google_sql_database_instance.mysql_instance`
+resource "google_compute_instance_template" "webapp_template" {
+  name         = "webapp-template-${var.environment}"
+  machine_type = "e2-medium"
+  region       = var.region
 
-# Create a Google Compute Engine instance with a startup script
-/*resource "google_compute_instance" "webapp_instance" {
-  name         = "webapp-instance"
-  machine_type = "n1-standard-1"
-  zone         = var.zone
-
-  boot_disk {
-    initialize_params {
-      image = var.image_name
-    }
+  disk {
+    source_image = var.image_name
+    auto_delete  = true
+    boot         = true
+    disk_size_gb = var.vm_disk_size
   }
 
   network_interface {
-    network = google_compute_network.vpc_network.self_link
-    access_config {
-      // Ephemeral public IP
-    }
+    network    = google_compute_network.vpc_network.self_link
+    subnetwork = google_compute_subnetwork.webapp.self_link
   }
 
-  metadata_startup_script = file("${path.module}/startup-script.sh")
-} */
-
-# Startup script to configure the web application
-resource "google_compute_instance" "webapp_instance" {
-  name         = "webapp-instance-${var.environment}"
-  machine_type = "n1-standard-1" # Adjust as necessary
-  zone         = var.zone
-
-  boot_disk {
-    initialize_params {
-      image = var.image_name
-    }
-  }
-
+  #metadata_startup_script = file("${path.module}/startup-script.sh")
   metadata = {
-    startup-script = <<-EOT
+    startup-script = <<-EOF
     #!/bin/bash
 
     # Exit on any error
     set -e
 
     # Wait for the Cloud SQL instance to be created and get the private IP address
-    DB_HOSTNAME="$(gcloud sql instances describe ${google_sql_database_instance.mysql_instance.name} --format='get(ipAddresses[0].ipAddress)')"
+    DB_HOSTNAME="${google_sql_database_instance.mysql_instance.private_ip_address}"
 
     # Wait for the random password to be generated
     DB_PASSWORD="${random_password.password.result}"
@@ -235,32 +219,110 @@ resource "google_compute_instance" "webapp_instance" {
     touch /var/run/startup-script-completed
 
     # The rest of your startup script...
-    EOT
+    EOF
   }
 
-
-  network_interface {
-    network    = google_compute_network.vpc_network.self_link
-    subnetwork = google_compute_subnetwork.webapp.self_link
-
-    access_config {
-      // Ephemeral public IP
-    }
-  }
   service_account {
     email  = google_service_account.service_account.email
     scopes = [
       "https://www.googleapis.com/auth/sqlservice.admin",
       "https://www.googleapis.com/auth/cloud-platform",
-      // ... any other required scopes ...
     ]
   }
-  tags = ["webapp-server"] # Matches the firewall rule target
-  #metadata_startup_script = file("${path.module}/startup-script.sh")
+
+  tags = ["webapp-server"]
 }
 
-output "instance_public_ip" {
-  value = google_compute_instance.webapp_instance.network_interface[0].access_config[0].nat_ip
+resource "google_compute_health_check" "webapp_health_check" {
+  name                = "webapp-health-check"
+  check_interval_sec  = 5
+  timeout_sec         = 5
+  healthy_threshold   = 2
+  unhealthy_threshold = 10
+
+  http_health_check {
+    request_path = "/healthz"
+    port         = "8080"
+  }
+}
+
+resource "google_compute_region_autoscaler" "webapp_autoscaler" {
+  name   = "webapp-autoscaler"
+  region = var.region
+  target = google_compute_region_instance_group_manager.webapp_group_manager.self_link
+
+  autoscaling_policy {
+    max_replicas    = 6
+    min_replicas    = 3
+    cooldown_period = 60
+
+    cpu_utilization {
+      target = 0.05
+    }
+  }
+}
+
+resource "google_compute_region_instance_group_manager" "webapp_group_manager" {
+  name               = "webapp-group-manager"
+  base_instance_name = "webapp-instance"
+  region             = var.region
+
+  version {
+    instance_template = google_compute_instance_template.webapp_template.id
+  }
+
+  named_port {
+    name = "http"
+    port = 8080
+  }
+
+  auto_healing_policies {
+    health_check      = google_compute_health_check.webapp_health_check.id
+    initial_delay_sec = 300
+  }
+}
+
+resource "google_compute_global_address" "lb_ip" {
+  name = "lb-ip"
+}
+
+resource "google_compute_managed_ssl_certificate" "ssl_certificate" {
+  name = "ssl-certificate"
+
+  managed {
+    domains = ["saivivekanand.me"]
+  }
+}
+
+resource "google_compute_backend_service" "webapp_backend" {
+  name      = "webapp-backend"
+  port_name = "http"
+  protocol  = "HTTP"
+
+  backend {
+    group = google_compute_region_instance_group_manager.webapp_group_manager.instance_group
+  }
+
+  health_checks = [google_compute_health_check.webapp_health_check.id]
+}
+
+resource "google_compute_url_map" "webapp_url_map" {
+  name            = "webapp-url-map"
+  default_service = google_compute_backend_service.webapp_backend.id
+}
+
+resource "google_compute_target_https_proxy" "webapp_https_proxy" {
+  name             = "webapp-https-proxy"
+  url_map          = google_compute_url_map.webapp_url_map.id
+  ssl_certificates = [google_compute_managed_ssl_certificate.ssl_certificate.id]
+}
+
+resource "google_compute_global_forwarding_rule" "https_forwarding_rule" {
+  name       = "https-forwarding-rule"
+  target     = google_compute_target_https_proxy.webapp_https_proxy.id
+  port_range = "443"
+  load_balancing_scheme = "EXTERNAL"
+  ip_address = google_compute_global_address.lb_ip.address
 }
 
 resource "google_dns_record_set" "a_record" {
@@ -268,7 +330,7 @@ resource "google_dns_record_set" "a_record" {
   type         = "A"
   ttl          = 300
   managed_zone = "vivek-dns-zone"
-  rrdatas      = [google_compute_instance.webapp_instance.network_interface[0].access_config[0].nat_ip]
+  rrdatas      = [google_compute_global_address.lb_ip.address]
 }
 
 # ... [existing resources] ...
@@ -305,65 +367,6 @@ resource "google_vpc_access_connector" "vpc_connector" {
   network       = google_compute_network.vpc_network.id
   ip_cidr_range = "10.0.3.0/28"
 }
-
-
-# Google Cloud Function
-/*resource "google_cloudfunctions_function" "cloud_function" {
-  name                  = "function-1"
-  description           = "A Cloud Function triggered by Pub/Sub to verify email"
-  runtime               = "python39"
-  available_memory_mb   = 256
-  source_archive_bucket = "verify-email-buckets"
-  source_archive_object = "function-source.zip"
-  entry_point           = "hello_pubsub"
-
-  event_trigger {
-    event_type = "google.pubsub.topic.publish"
-    resource   = google_pubsub_topic.pubsub_topic.id
-  }
-
-  vpc_connector = google_vpc_access_connector.vpc_connector.id
-
-  # Optional: Set environment variables for the Cloud Function
-  environment_variables = {
-    MAILGUN_API_KEY = var.mailgun_api_key
-    MAILGUN_DOMAIN  = var.mailgun_domain
-    MAILGUN_SENDER_EMAIL = var.mailgun_sender_email
-    INSTANCE_CONNECTION_NAME = "${var.project_id}:${var.region}:${google_sql_database_instance.mysql_instance.name}"
-    DB_HOST_NAME=google_sql_database_instance.mysql_instance.private_ip_address
-    DB_USERNAME="webapp"
-    DB_PASSWORD=random_password.password.result
-    # Any other environment variables can be added here
-  }
-}*/
-
-/*resource "google_cloudfunctions_function" "cloud_function" {
-  name                  = "function-1"
-  description           = "A Cloud Function triggered by Pub/Sub to verify email"
-  runtime               = "python39"
-  available_memory_mb   = 256
-  source_archive_bucket = google_storage_bucket.cloud_function_bucket.name
-  source_archive_object = google_storage_bucket_object.cloud_zip.name
-  entry_point           = "hello_pubsub"
-
-  event_trigger {
-    event_type = "google.pubsub.topic.publish"
-    resource   = google_pubsub_topic.pubsub_topic.id
-  }
-
-  vpc_connector = google_vpc_access_connector.vpc_connector.id
-
-  environment_variables = {
-    MAILGUN_API_KEY               = var.mailgun_api_key
-    MAILGUN_DOMAIN                = var.mailgun_domain
-    MAILGUN_SENDER_EMAIL          = var.mailgun_sender_email
-    INSTANCE_CONNECTION_NAME      = "${var.project_id}:${var.region}:${google_sql_database_instance.mysql_instance.name}"
-    DB_HOST_NAME                  = google_sql_database_instance.mysql_instance.private_ip_address
-    DB_USERNAME                   = "webapp"
-    DB_PASSWORD                   = random_password.password.result
-    GOOGLE_CLOUDFUNCTIONS_GENERATION = "2"
-  }
-}*/
 
 resource "google_cloudfunctions2_function" "cloud_function" {
   name                  = "function-1"
