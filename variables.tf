@@ -6,6 +6,14 @@ variable "project_id" {
   description = "The project ID to host resources in"
 }
 
+variable "vm_disk_size" {
+  description = "vm size"
+}
+
+variable "service_account" {
+  description = "service account"
+}
+
 variable "mailgun_api_key" {
   description = "The project ID to host resources in"
   type = string
