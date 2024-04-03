@@ -68,10 +68,11 @@ resource "google_service_networking_connection" "private_vpc_connection" {
 
 
 resource "google_compute_subnetwork" "webapp" {
-  name          = "webapp-${var.environment}"
-  ip_cidr_range = var.webapp_subnet_cidr
-  region        = var.region
-  network       = google_compute_network.vpc_network.self_link
+  name                     = "webapp-${var.environment}"
+  ip_cidr_range            = var.webapp_subnet_cidr
+  region                   = var.region
+  network                  = google_compute_network.vpc_network.self_link
+  private_ip_google_access = true
 }
 
 resource "google_compute_subnetwork" "db" {
@@ -106,7 +107,7 @@ resource "google_compute_firewall" "deny_external_traffic" {
   name    = "deny-external-traffic-${var.environment}"
   network = google_compute_network.vpc_network.self_link
 
-  allow {
+  deny {
     protocol = "tcp"
     ports    = ["22"]
   }
