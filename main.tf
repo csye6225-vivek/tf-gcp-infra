@@ -9,14 +9,129 @@ provider "google-beta" {
   region  = var.region
 }
 
-/*provider "random" {
-  version = "~> 3.0"
-} */
-
 resource "google_service_account" "service_account" {
   account_id   = var.service_account
   display_name = "Service6225"
 }
+
+resource "google_kms_key_ring" "key_ring" {
+  name     = "webapp_key_Rings3"
+  location = var.region
+  /*lifecycle {
+    prevent_destroy = false
+    ignore_changes  = [name]
+  }*/
+}
+
+resource "google_project_iam_member" "service_account_kms_binding" {
+  project = var.project_id
+  role    = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member  = "serviceAccount:${google_service_account.service_account.email}"
+}
+
+resource "google_kms_crypto_key" "vm_key" {
+  name            = "vm-key"
+  key_ring        = google_kms_key_ring.key_ring.id
+  rotation_period = "2592000s" # 30 days
+  /*lifecycle {
+    prevent_destroy = false
+    ignore_changes  = [rotation_period]
+  }*/
+}
+
+resource "google_kms_crypto_key" "sql_key" {
+  name            = "sql-key"
+  key_ring        = google_kms_key_ring.key_ring.id
+  rotation_period = "2592000s" # 30 days
+  /*lifecycle {
+    prevent_destroy = false
+    ignore_changes  = [rotation_period]
+  }*/
+}
+
+resource "google_kms_crypto_key" "storage_key" {
+  name            = "storage-key"
+  key_ring        = google_kms_key_ring.key_ring.id
+  rotation_period = "2592000s" # 30 days
+  /*lifecycle {
+    prevent_destroy = false
+    ignore_changes  = [rotation_period]
+  }*/
+}
+
+resource "google_project_service_identity" "cloudsql_sa" {
+  provider = google-beta
+
+  project = var.project_id
+  service = "sqladmin.googleapis.com"
+}
+
+data "google_storage_project_service_account" "gcs_account" {
+}
+
+resource "google_kms_crypto_key_iam_binding" "sql_binding" {
+  crypto_key_id = google_kms_crypto_key.sql_key.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+
+  members = [
+    "serviceAccount:${google_service_account.service_account.email}",
+    "serviceAccount:${data.google_storage_project_service_account.gcs_account.email_address}",
+    "serviceAccount:${google_project_service_identity.cloudsql_sa.email}"
+  ]
+  depends_on = [
+    google_kms_crypto_key.sql_key
+  ]
+
+}
+
+resource "google_kms_crypto_key_iam_binding" "vm_binding" {
+  crypto_key_id = google_kms_crypto_key.vm_key.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+
+  members = [
+    "serviceAccount:${google_service_account.service_account.email}",
+    "serviceAccount:${data.google_storage_project_service_account.gcs_account.email_address}",
+    "serviceAccount:${google_project_service_identity.cloudsql_sa.email}",
+    "serviceAccount:service-1068004744273@compute-system.iam.gserviceaccount.com"
+  ]
+  depends_on = [
+      google_kms_crypto_key.vm_key
+  ]
+}
+
+resource "google_kms_crypto_key_iam_binding" "storage_binding" {
+  crypto_key_id = google_kms_crypto_key.storage_key.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+
+  members = [
+    "serviceAccount:${google_service_account.service_account.email}",
+    "serviceAccount:${data.google_storage_project_service_account.gcs_account.email_address}",
+    "serviceAccount:${google_project_service_identity.cloudsql_sa.email}",
+    "serviceAccount:service-1068004744273@gs-project-accounts.iam.gserviceaccount.com"
+  ]
+  depends_on = [
+    google_kms_crypto_key.storage_key
+  ]
+}
+
+
+
+/*resource "google_service_account" "cloudsql_service_account" {
+  account_id   = "cloudsql-service-account"
+  display_name = "Cloud SQL Service Account"
+}
+
+resource "google_project_iam_member" "cloudsql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.cloudsql_service_account.email}"
+}
+
+resource "google_project_iam_member" "cloudsql_editor" {
+  project = var.project_id
+  role    = "roles/cloudsql.editor"
+  member  = "serviceAccount:${google_service_account.cloudsql_service_account.email}"
+} */
 
 output "service_account_email" {
   value = google_service_account.service_account.email
@@ -40,6 +155,12 @@ resource "google_project_iam_binding" "monitoring_metric_writer" {
   ]
 }
 
+resource "google_project_iam_member" "kms_admin" {
+  project = var.project_id
+  role    = "roles/cloudkms.admin"
+  member  = "serviceAccount:${google_service_account.service_account.email}"
+}
+
 resource "google_project_iam_member" "cloud_sql_admin" {
   project = var.project_id
   role    = "roles/cloudsql.admin"
@@ -49,6 +170,12 @@ resource "google_project_iam_member" "cloud_sql_admin" {
 resource "google_project_iam_member" "pubsub_publisher" {
   project = var.project_id
   role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:${google_service_account.service_account.email}"
+}
+
+resource "google_project_iam_member" "sql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
   member  = "serviceAccount:${google_service_account.service_account.email}"
 }
 
@@ -65,7 +192,6 @@ resource "google_service_networking_connection" "private_vpc_connection" {
   service                 = "servicenetworking.googleapis.com"
   reserved_peering_ranges = [google_compute_global_address.private_ip_address.name]
 }
-
 
 resource "google_compute_subnetwork" "webapp" {
   name                     = "webapp-${var.environment}"
@@ -116,8 +242,6 @@ resource "google_compute_firewall" "deny_external_traffic" {
   target_tags   = ["webapp-server"]
 }
 
-
-
 resource "google_project_service" "service_networking" {
   service            = "servicenetworking.googleapis.com"
   disable_on_destroy = false
@@ -134,7 +258,9 @@ resource "google_compute_global_address" "private_ip_address" {
 
 resource "google_sql_database_instance" "mysql_instance" {
   name             = var.instance_name
-  database_version = "MYSQL_5_7" # or the version you want to use
+  database_version = "MYSQL_5_7"
+
+  encryption_key_name = google_kms_crypto_key.sql_key.id
 
   settings {
     tier              = var.instance_tier
@@ -144,7 +270,7 @@ resource "google_sql_database_instance" "mysql_instance" {
     disk_type         = "PD_SSD"
 
     backup_configuration {
-      binary_log_enabled = true // Enable binary logging for HA
+      binary_log_enabled = true
       enabled            = var.backup_enabled
     }
 
@@ -159,7 +285,10 @@ resource "google_sql_database_instance" "mysql_instance" {
   }
 
   deletion_protection = false
-  depends_on          = [google_service_networking_connection.private_vpc_connection]
+  depends_on = [
+    google_service_networking_connection.private_vpc_connection,
+    google_service_account.service_account
+  ]
 }
 
 resource "google_sql_database" "webapp_db" {
@@ -188,6 +317,9 @@ resource "google_compute_instance_template" "webapp_template" {
     auto_delete  = true
     boot         = true
     disk_size_gb = var.vm_disk_size
+    disk_encryption_key {
+      kms_key_self_link = google_kms_crypto_key.vm_key.id
+    }
   }
 
   network_interface {
@@ -195,31 +327,22 @@ resource "google_compute_instance_template" "webapp_template" {
     subnetwork = google_compute_subnetwork.webapp.self_link
   }
 
-  #metadata_startup_script = file("${path.module}/startup-script.sh")
   metadata = {
     startup-script = <<-EOF
     #!/bin/bash
 
-    # Exit on any error
     set -e
 
-    # Wait for the Cloud SQL instance to be created and get the private IP address
     DB_HOSTNAME="${google_sql_database_instance.mysql_instance.private_ip_address}"
-
-    # Wait for the random password to be generated
     DB_PASSWORD="${random_password.password.result}"
 
-    # Create the .env file with the necessary environment variables
     cat > /opt/.env <<EOF2
     DB_HOSTNAME=$DB_HOSTNAME
     DB_USERNAME=webapp
     DB_PASSWORD=$DB_PASSWORD
     EOF2
 
-    # Signal that the startup script has finished
     touch /var/run/startup-script-completed
-
-    # The rest of your startup script...
     EOF
   }
 
@@ -334,21 +457,45 @@ resource "google_dns_record_set" "a_record" {
   rrdatas      = [google_compute_global_address.lb_ip.address]
 }
 
-# ... [existing resources] ...
-# Cloud Storage bucket to store Cloud Function code
- resource "google_storage_bucket" "cloud_function_bucket" {
+/*resource "google_service_account" "storage_service_account" {
+  account_id   = "storage-service-account"
+  display_name = "Storage Service Account"
+} */
+
+resource "google_storage_bucket" "cloud_function_bucket" {
   name          = "verify-email-buckets"
   location      = var.region
   force_destroy = true
+  encryption {
+    default_kms_key_name = google_kms_crypto_key.storage_key.id
+  }
+  uniform_bucket_level_access = true
+  depends_on = [
+    google_service_account.service_account
+  ]
 }
+
+/*resource "google_storage_bucket_iam_member" "storage_admin" {
+  bucket = google_storage_bucket.cloud_function_bucket.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.storage_service_account.email}"
+}
+
+resource "google_kms_crypto_key_iam_binding" "storage_key_binding" {
+  crypto_key_id = google_kms_crypto_key.storage_key.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+
+  members = [
+    "serviceAccount:${google_service_account.storage_service_account.email}",
+  ]
+} */
 
 resource "google_storage_bucket_object" "cloud_zip" {
   name   = var.cloud_zip_name
   bucket = google_storage_bucket.cloud_function_bucket.name
-  source = var.cloud_zip_source #/Users/sai_vivek_vangala/Downloads
+  source = var.cloud_zip_source
 }
 
-# Google Cloud Pub/Sub topic to trigger the Cloud Function
 resource "google_pubsub_topic" "pubsub_topic" {
   name = "verify_email"
 }
@@ -360,8 +507,6 @@ resource "google_pubsub_subscription" "pubsub_subscription" {
   ack_deadline_seconds = 20
 }
 
-
-# Serverless VPC Access connector configuration
 resource "google_vpc_access_connector" "vpc_connector" {
   name          = "serverless-connector"
   region        = var.region
@@ -370,9 +515,9 @@ resource "google_vpc_access_connector" "vpc_connector" {
 }
 
 resource "google_cloudfunctions2_function" "cloud_function" {
-  name                  = "function-1"
-  description           = "A Cloud Function triggered by Pub/Sub to verify email"
-  location              = var.region
+  name        = "function-1"
+  description = "A Cloud Function triggered by Pub/Sub to verify email"
+  location    = var.region
   build_config {
     runtime     = "python310"
     entry_point = "hello_pubsub"
@@ -405,10 +550,6 @@ resource "google_cloudfunctions2_function" "cloud_function" {
   }
 }
 
-# ... (Other resources like Compute instances, DNS record sets, etc.) ...
-
-# Outputs to display after Terraform apply
-
 output "pubsub_topic_name" {
   value = google_pubsub_topic.pubsub_topic.name
 }
@@ -416,5 +557,3 @@ output "pubsub_topic_name" {
 output "cloud_function_name" {
   value = google_cloudfunctions2_function.cloud_function.name
 }
-
-# ... (Any additional outputs) ...
